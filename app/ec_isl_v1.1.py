@@ -7,12 +7,14 @@ separado en hojas, con el mismo formato que la planilla que se le envia a ISL.
 
 Uso:
     Doble clic en EC_ISL_v1.1.bat (o arrastrar el Excel sobre el .bat)
-    python ec_isl_v1.1.py
-    python ec_isl_v1.1.py "ruta\\al\\resultado_consulta.xlsx"
-    python ec_isl_v1.1.py --cli "ruta\\al\\resultado_consulta.xlsx"
+    python app\\ec_isl_v1.1.py
+    python app\\ec_isl_v1.1.py "ruta\\al\\resultado_consulta.xlsx"
+    python app\\ec_isl_v1.1.py --cli "ruta\\al\\resultado_consulta.xlsx"
 """
 
+import os
 import re
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -445,8 +447,11 @@ ACENTO_ACTIVO = "#163A56"
 OK_COLOR = "#157A3A"
 ERROR = "#B42318"
 
-FUENTE = "Segoe UI"
+FUENTE_UI = "Segoe UI"
 ANCHO = 420
+
+VERSION = "1.1"
+EMPRESA = "Independencia Shipping Lines"
 
 
 def preparar_dpi():
@@ -464,7 +469,7 @@ def preparar_dpi():
 class Aplicacion(tk.Tk):
     def __init__(self, archivo_inicial=None):
         super().__init__()
-        self.title("EC ISL")
+        self.title(f"Estado de cuenta ISL - {EMPRESA}")
         self.configure(bg=FONDO)
         self.ruta = None
         self.ocupado = False
@@ -488,6 +493,7 @@ class Aplicacion(tk.Tk):
             y = max((self.winfo_screenheight() - alto) // 3, 0)
         else:
             x, y = self.winfo_x(), self.winfo_y()
+            y = max(min(y, self.winfo_screenheight() - alto - 80), 0)
         self.geometry(f"{ancho}x{alto}+{x}+{y}")
         self.resizable(False, False)
 
@@ -495,24 +501,45 @@ class Aplicacion(tk.Tk):
         marco = tk.Frame(self, bg=FONDO, padx=28, pady=26)
         marco.pack(fill="both", expand=True)
 
-        tk.Label(marco, text="EC ISL", bg=FONDO, fg=TINTA,
-                 font=(FUENTE, 22), anchor="w").pack(fill="x")
-        tk.Label(marco, text="Estado de cuenta", bg=FONDO, fg=SUAVE,
-                 font=(FUENTE, 11), anchor="w").pack(fill="x", pady=(2, 22))
+        tk.Label(marco, text="Estado de cuenta ISL", bg=FONDO, fg=TINTA,
+                 font=(FUENTE_UI, 20), anchor="w").pack(fill="x")
+        tk.Label(marco, text=EMPRESA, bg=FONDO, fg=SUAVE,
+                 font=(FUENTE_UI, 11), anchor="w").pack(fill="x", pady=(2, 0))
+        tk.Label(marco, text=f"SAP Business One  ·  Movimientos desde {FECHA_DESDE:%d/%m/%Y}  ·  v{VERSION}",
+                 bg=FONDO, fg=SUAVE, font=(FUENTE_UI, 9), anchor="w").pack(fill="x", pady=(2, 16))
 
-        tk.Label(marco, text="Excel de la consulta", bg=FONDO, fg=SUAVE,
-                 font=(FUENTE, 9), anchor="w").pack(fill="x")
+        self.ayuda = tk.Frame(marco, bg=FONDO)
+        self.ayuda.pack(fill="x")
+        tk.Frame(self.ayuda, bg=LINEA, height=1).pack(fill="x", pady=(0, 14))
+        pasos = tk.Frame(self.ayuda, bg=FONDO)
+        pasos.pack(fill="x", pady=(0, 18))
+        pasos.columnconfigure(1, weight=1)
+        textos = [
+            "En SAP, ejecutar la consulta EC ISL, copiar los datos y pegarlos en un Excel.",
+            "Elegir ese Excel acá abajo y generar.",
+            f"Se crea «EC ISL al {date.today():%d.%m.%Y}.xlsx» en la misma carpeta, "
+            f"con una hoja por sección y el {HOJA_RESUMEN}.",
+        ]
+        for i, texto in enumerate(textos):
+            tk.Label(pasos, text=str(i + 1), bg=FONDO, fg=ACENTO, font=(FUENTE_UI, 9, "bold"),
+                     width=2, anchor="nw").grid(row=i, column=0, sticky="nw", pady=1)
+            tk.Label(pasos, text=texto, bg=FONDO, fg=TINTA, font=(FUENTE_UI, 9), anchor="w",
+                     justify="left", wraplength=ANCHO - 24).grid(row=i, column=1, sticky="w", pady=1)
+
+        self.lbl_excel = tk.Label(marco, text="Excel de la consulta", bg=FONDO, fg=SUAVE,
+                                  font=(FUENTE_UI, 9), anchor="w")
+        self.lbl_excel.pack(fill="x")
 
         self.zona_archivo = tk.Frame(marco, bg=CAMPO, highlightbackground=LINEA,
                                       highlightthickness=1, cursor="hand2")
         self.zona_archivo.pack(fill="x", pady=(6, 0))
         self.lbl_nombre = tk.Label(self.zona_archivo, text="Elegí un archivo",
-                                    bg=CAMPO, fg=TINTA, font=(FUENTE, 11),
+                                    bg=CAMPO, fg=TINTA, font=(FUENTE_UI, 11),
                                     anchor="w", justify="left", padx=12, pady=8,
                                     wraplength=ANCHO)
         self.lbl_nombre.pack(fill="x")
-        self.lbl_carpeta = tk.Label(self.zona_archivo, text="SAP  ·  Ejecutar, copiar datos, pegar en Excel",
-                                     bg=CAMPO, fg=SUAVE, font=(FUENTE, 9),
+        self.lbl_carpeta = tk.Label(self.zona_archivo, text="Hacé clic para buscarlo  ·  .xlsx o .xls",
+                                     bg=CAMPO, fg=SUAVE, font=(FUENTE_UI, 9),
                                      anchor="w", justify="left", padx=12,
                                      wraplength=ANCHO)
         self.lbl_carpeta.pack(fill="x", pady=(0, 10))
@@ -522,7 +549,7 @@ class Aplicacion(tk.Tk):
         self.boton = tk.Button(
             marco, text="Generar estado de cuenta", command=self._generar,
             bg="#E4E4E7", fg="#A1A1AA", activebackground="#E4E4E7", activeforeground="#A1A1AA",
-            relief="flat", bd=0, font=(FUENTE, 11), pady=10, cursor="hand2",
+            relief="flat", bd=0, font=(FUENTE_UI, 11), pady=10, cursor="hand2",
             state="disabled",
         )
         self.boton.pack(fill="x", pady=(16, 0))
@@ -531,8 +558,10 @@ class Aplicacion(tk.Tk):
         tk.Frame(marco, bg=FONDO, width=ANCHO, height=1).pack(fill="x")
 
         self.estado = tk.Label(marco, text="", bg=FONDO, fg=SUAVE,
-                                font=(FUENTE, 9), anchor="w", justify="left", wraplength=ANCHO)
+                                font=(FUENTE_UI, 9), anchor="w", justify="left", wraplength=ANCHO)
         self.estado.pack(fill="x", pady=(12, 0))
+
+        self.panel = tk.Frame(marco, bg=FONDO)
 
     def _poner_archivo(self, ruta):
         self.ruta = Path(ruta)
@@ -540,6 +569,67 @@ class Aplicacion(tk.Tk):
         self.lbl_carpeta.config(text=str(self.ruta.parent))
         self._habilitar(True)
         self._mostrar_estado("")
+        self._ocultar_resultado()
+
+    def _ocultar_resultado(self):
+        if self.panel.winfo_ismapped():
+            self.panel.pack_forget()
+            self.ayuda.pack(fill="x", before=self.lbl_excel)
+            self._ajustar()
+
+    def _mostrar_resultado(self, res):
+        for w in self.panel.winfo_children():
+            w.destroy()
+
+        tk.Frame(self.panel, bg=LINEA, height=1).pack(fill="x", pady=(14, 12))
+        tk.Label(self.panel, text="Saldo por hoja", bg=FONDO, fg=SUAVE,
+                 font=(FUENTE_UI, 9), anchor="w").pack(fill="x")
+
+        tabla = tk.Frame(self.panel, bg=FONDO)
+        tabla.pack(fill="x", pady=(6, 0))
+        tabla.columnconfigure(1, weight=1)
+
+        def fila(i, nombre, saldo, marca, ok, color=None, negrita=False):
+            peso = "bold" if negrita else "normal"
+            if color:
+                tk.Frame(tabla, bg=f"#{color}", width=10, height=10).grid(row=i, column=0, padx=(0, 8))
+            tk.Label(tabla, text=nombre, bg=FONDO, fg=TINTA, font=(FUENTE_UI, 9, peso),
+                     anchor="w").grid(row=i, column=1, sticky="w", pady=1)
+            tk.Label(tabla, text=f"USD {saldo:,.2f}", bg=FONDO, fg=TINTA, font=(FUENTE_UI, 9, peso),
+                     anchor="e").grid(row=i, column=2, sticky="e", padx=(12, 0))
+            tk.Label(tabla, text=marca, bg=FONDO, fg=OK_COLOR if ok else ERROR,
+                     font=(FUENTE_UI, 9), anchor="w").grid(row=i, column=3, sticky="w", padx=(12, 0))
+
+        for i, h in enumerate(res.hojas):
+            fila(i, h.nombre.title(), h.saldo,
+                 "OK" if h.ok else f"SAP: {h.esperado:,.2f}", h.ok, color=HOJAS[h.nombre]["tab"])
+
+        n = len(res.hojas)
+        tk.Frame(tabla, bg=LINEA, height=1).grid(row=n, column=0, columnspan=4, sticky="ew", pady=6)
+        fila(n + 1, "Total hojas", res.total_hojas, "", True, negrita=True)
+        fila(n + 2, "Saldo en SAP", res.total_sap,
+             "OK" if res.totales_ok else "Revisar", res.totales_ok, negrita=True)
+
+        if res.sin_hoja:
+            lineas = [f"{len(res.sin_hoja)} documento(s) abierto(s) sin hoja asignada "
+                      "(revisar Sección en la consulta):"]
+            for d in res.sin_hoja[:5]:
+                lineas.append(f"   {d.nro}  ·  {d.fecha:%d/%m/%Y}  ·  USD {d.saldo:,.2f}  ·  {d.seccion or 'sin sección'}")
+            if len(res.sin_hoja) > 5:
+                lineas.append(f"   y {len(res.sin_hoja) - 5} más (ver la consola).")
+            tk.Label(self.panel, text="\n".join(lineas), bg=FONDO, fg=ERROR, font=(FUENTE_UI, 9),
+                     anchor="w", justify="left", wraplength=ANCHO).pack(fill="x", pady=(10, 0))
+
+        acciones = tk.Frame(self.panel, bg=FONDO)
+        acciones.pack(fill="x", pady=(14, 0))
+        for texto, accion in (("Abrir Excel", lambda: os.startfile(res.salida)),
+                              ("Mostrar en carpeta", lambda: subprocess.Popen(f'explorer /select,"{res.salida}"'))):
+            tk.Button(acciones, text=texto, command=accion, bg=CAMPO, fg=ACENTO,
+                      activebackground=LINEA, activeforeground=ACENTO_ACTIVO, relief="flat", bd=0,
+                      font=(FUENTE_UI, 9), padx=12, pady=6, cursor="hand2").pack(side="left", padx=(0, 8))
+
+        self.ayuda.pack_forget()
+        self.panel.pack(fill="x")
 
     def _elegir(self):
         if self.ocupado:
@@ -581,6 +671,7 @@ class Aplicacion(tk.Tk):
         self.ocupado = True
         self._habilitar(False)
         self._mostrar_estado("Generando…")
+        self._ocultar_resultado()
         threading.Thread(target=self._correr, daemon=True).start()
 
     def _correr(self):
@@ -595,7 +686,7 @@ class Aplicacion(tk.Tk):
             print(f"\nERROR: {e}")
             self._en_ui(lambda m=str(e): self._fallo(f"Error inesperado: {m}"))
         else:
-            self._en_ui(lambda n=resultado.salida.name: self._listo(n))
+            self._en_ui(lambda r=resultado: self._listo(r))
 
     def _en_ui(self, fn):
         try:
@@ -609,10 +700,14 @@ class Aplicacion(tk.Tk):
         self._mostrar_estado(mensaje, ERROR)
         self._ajustar()
 
-    def _listo(self, nombre):
+    def _listo(self, res):
         self.ocupado = False
         self._habilitar(True)
-        self._mostrar_estado(f"Listo: {nombre}", OK_COLOR)
+        if all(h.ok for h in res.hojas) and res.totales_ok and not res.sin_hoja:
+            self._mostrar_estado(f"Listo: {res.salida.name}", OK_COLOR)
+        else:
+            self._mostrar_estado(f"Generado {res.salida.name}, pero hay controles para revisar.", ERROR)
+        self._mostrar_resultado(res)
         self._ajustar()
 
 
