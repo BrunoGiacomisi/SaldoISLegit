@@ -1,0 +1,13 @@
+# Datos de SAP / planillas generadas
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+
+# Windows
+desktop.ini
+Thumbs.db
