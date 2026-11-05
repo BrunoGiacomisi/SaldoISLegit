@@ -8,9 +8,9 @@ if not defined EC_ISL_MIN (
 )
 cd /d "%~dp0"
 if "%~1"=="" (
-  python "%~dp0app\ec_isl_v1.1.py"
+  python "%~dp0app\iniciar.py"
 ) else (
-  python "%~dp0app\ec_isl_v1.1.py" "%~1"
+  python "%~dp0app\iniciar.py" "%~1"
 )
 echo.
 pause
