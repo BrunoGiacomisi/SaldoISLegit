@@ -14,15 +14,17 @@ Toma el resultado de la consulta SQL, lo separa en hojas (ESCALAS, OPERATIVA, RE
 
 ## Uso
 
-1. En SAP Business One, ejecutar la consulta de `sql/consulta_ec_isl_v1.1.sql`, copiar los datos y pegarlos en un Excel.
-2. Hacer doble clic en `EC_ISL_v1.1.bat` y elegir ese Excel (o arrastrar el Excel sobre el `.bat`).
-3. Se genera `EC ISL al DD.MM.AAAA.xlsx` en la misma carpeta que el Excel de origen.
+1. En SAP Business One, ejecutar la consulta de `sql/consulta_ec_isl_v1.1.sql` y copiar los datos.
+2. Hacer doble clic en `EC_ISL_v1.1.bat` y tocar **Pegar desde SAP**. También se puede elegir un Excel o `.txt` con el resultado de la consulta (o arrastrarlo sobre el `.bat`).
+3. Se genera `EC ISL al DD.MM.AAAA.xlsx` en la carpeta **Descargas** de Windows.
+
+Los importes se aceptan con el formato de SAP (`7.635,73`). Si alguno no se puede leer, el programa avisa en lugar de tomarlo como cero.
 
 También se puede correr desde la terminal:
 
 ```
 python app\ec_isl_v1.1.py "ruta\al\resultado_consulta.xlsx"
-python app\ec_isl_v1.1.py --cli "ruta\al\resultado_consulta.xlsx"
+python app\ec_isl_v1.1.py --cli "ruta\al\resultado_consulta.txt"
 ```
 
 ## Estructura

@@ -1,22 +1,27 @@
 """
 EC ISL - Generador del estado de cuenta de Independencia Shipping Lines (v1.1)
 
-Toma el Excel que sale de la consulta SQL "EC ISL - Estado de cuenta con secciones"
-(SAP Business One > Copiar datos > pegar en Excel) y genera el estado de cuenta
-separado en hojas, con el mismo formato que la planilla que se le envia a ISL.
+Toma el resultado de la consulta SQL "EC ISL - Estado de cuenta con secciones"
+(SAP Business One > Copiar datos), pegado directo desde el portapapeles o guardado
+en un Excel o .txt, y genera el estado de cuenta separado en hojas, con el mismo
+formato que la planilla que se le envia a ISL. El Excel se guarda en Descargas.
 
 Uso:
-    Doble clic en EC_ISL_v1.1.bat (o arrastrar el Excel sobre el .bat)
+    Doble clic en EC_ISL_v1.1.bat (o arrastrar el Excel / .txt sobre el .bat)
     python app\\ec_isl_v1.1.py
     python app\\ec_isl_v1.1.py "ruta\\al\\resultado_consulta.xlsx"
-    python app\\ec_isl_v1.1.py --cli "ruta\\al\\resultado_consulta.xlsx"
+    python app\\ec_isl_v1.1.py --cli "ruta\\al\\resultado_consulta.txt"
 """
 
+import csv
+import ctypes
+import io
 import os
 import re
 import subprocess
 import sys
 import threading
+import uuid
 import tkinter as tk
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -55,6 +60,9 @@ COLUMNAS_REQUERIDAS = [
     "Fecha", "Tipo", "Factura", "Total", "Saldo pendiente", "Proyecto",
     "Comentarios", "Seccion", "Estado", "Cobrado", "Fecha de cobro", "Detalle de pago",
 ]
+COLUMNAS_IMPORTE = ["Total", "Saldo pendiente", "Cobrado"]
+
+TIPOS_ARCHIVO = [("Consulta EC ISL", "*.xlsx *.xls *.txt"), ("Excel", "*.xlsx *.xls"), ("Texto", "*.txt")]
 
 # Colores (tema de la planilla original)
 AZUL_ENCABEZADO = "96DCF8"
@@ -81,8 +89,8 @@ def elegir_archivo():
         raiz = tk.Tk()
         raiz.withdraw()
         ruta = filedialog.askopenfilename(
-            title="Elegir el Excel con el resultado de la consulta EC ISL",
-            filetypes=[("Excel", "*.xlsx *.xls")],
+            title="Elegir el resultado de la consulta EC ISL",
+            filetypes=TIPOS_ARCHIVO,
         )
         raiz.destroy()
         return ruta or None
@@ -149,12 +157,87 @@ def leer_consulta(ruta):
     )
 
 
+def importe_sap(valor):
+    """Pasa '7.635,73' (formato de SAP) a '7635.73'; tambien acepta '7,635.73'."""
+    if not isinstance(valor, str):
+        return valor
+    t = valor.replace("USD", "").replace(" ", "").strip()
+    if "," in t:
+        if "." in t and t.rfind(".") > t.rfind(","):
+            return t.replace(",", "")
+        return t.replace(".", "").replace(",", ".")
+    if re.fullmatch(r"-?\d{1,3}(\.\d{3})+", t):
+        return t.replace(".", "")
+    return t
+
+
+def leer_texto(texto, origen):
+    """Lee la consulta copiada de SAP: texto separado por tabulaciones, con la fila de encabezados."""
+    lineas = texto.splitlines()
+    requeridas = set(COLUMNAS_REQUERIDAS)
+    for i, linea in enumerate(lineas[:20]):
+        if requeridas <= {c.strip() for c in linea.split("\t")}:
+            try:
+                df = pd.read_csv(io.StringIO("\n".join(lineas[i:])), sep="\t", dtype=str,
+                                 quoting=csv.QUOTE_NONE, keep_default_na=False, na_values=[""])
+            except Exception as e:
+                raise ErrorUsuario(f"No se pudieron leer los datos de {origen} ({e}).")
+            df.columns = [str(c).strip() for c in df.columns]
+            df = df.loc[:, ~df.columns.str.startswith("Unnamed")]
+            return df.dropna(how="all")
+
+    raise ErrorUsuario(
+        f"{origen} no tiene el resultado de la consulta EC ISL.\n"
+        "  En SAP, ejecuta la consulta y copia los datos con los encabezados.\n"
+        f"  Columnas que tiene que tener: {', '.join(COLUMNAS_REQUERIDAS)}"
+    )
+
+
+def leer_archivo(ruta):
+    """Lee la consulta desde un Excel o desde un .txt con lo copiado de SAP."""
+    ruta = Path(ruta)
+    if ruta.suffix.lower() not in (".txt", ".tsv"):
+        return leer_consulta(ruta)
+    try:
+        datos = ruta.read_bytes()
+    except OSError as e:
+        raise ErrorUsuario(f"No se pudo abrir {ruta.name} ({e}).")
+    if datos[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        texto = datos.decode("utf-16")
+    else:
+        try:
+            texto = datos.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            texto = datos.decode("cp1252")
+    return leer_texto(texto, ruta.name)
+
+
+def carpeta_descargas():
+    """Carpeta Descargas configurada en Windows (puede estar movida, por ejemplo a OneDrive)."""
+    try:
+        guid = ctypes.create_string_buffer(uuid.UUID("374DE290-123F-4565-9164-39C4925E467B").bytes_le)
+        ruta = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(guid, 0, None, ctypes.byref(ruta)) == 0:
+            carpeta = Path(ruta.value)
+            ctypes.windll.ole32.CoTaskMemFree(ruta)
+            return carpeta
+    except Exception:
+        pass
+    return Path.home() / "Downloads"
+
+
 def preparar(df):
     df = df.copy()
     df["Fecha"] = pd.to_datetime(df["Fecha"], dayfirst=True)
     df["Fecha de cobro"] = pd.to_datetime(df["Fecha de cobro"], dayfirst=True, errors="coerce")
-    for c in ["Total", "Saldo pendiente", "Cobrado"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    for c in COLUMNAS_IMPORTE:
+        valores = pd.to_numeric(df[c].map(importe_sap), errors="coerce")
+        ilegibles = df[c].notna() & df[c].astype(str).str.strip().ne("") & valores.isna()
+        if ilegibles.any():
+            ejemplos = ", ".join(df.loc[ilegibles, c].astype(str).head(3))
+            raise ErrorUsuario(f"Hay {ilegibles.sum()} importe(s) en la columna {c} que no se "
+                               f"pudieron leer (por ejemplo: {ejemplos}).")
+        df[c] = valores.fillna(0.0)
 
     docs = df[df["Tipo"].isin(["Factura", "Nota de credito"])].copy()
     docs = docs[docs["Fecha"].dt.date >= FECHA_DESDE]
@@ -355,10 +438,9 @@ class Resultado:
         return abs(self.total_hojas - self.total_sap) < 0.05
 
 
-def generar(ruta):
-    """Arma el Excel del estado de cuenta y devuelve los controles de saldo."""
-    ruta = Path(ruta)
-    df, docs = preparar(leer_consulta(ruta))
+def generar(consulta):
+    """Arma el Excel del estado de cuenta en Descargas y devuelve los controles de saldo."""
+    df, docs = preparar(consulta)
 
     a_cuenta = pagos_a_cuenta(df)
 
@@ -383,11 +465,14 @@ def generar(ruta):
         seccion = r["Seccion"] if pd.notna(r["Seccion"]) else ""
         sin_hoja.append(DocSinHoja(r["nro"], r["Fecha"], r["Saldo pendiente"], str(seccion)))
 
-    salida = ruta.with_name(f"EC ISL al {date.today():%d.%m.%Y}.xlsx")
+    carpeta = carpeta_descargas()
+    salida = carpeta / f"EC ISL al {date.today():%d.%m.%Y}.xlsx"
     try:
+        carpeta.mkdir(parents=True, exist_ok=True)
         wb.save(salida)
     except PermissionError:
-        raise ErrorUsuario(f"No se pudo guardar {salida.name}. Si esta abierto en Excel, cerralo y proba de nuevo.")
+        raise ErrorUsuario(f"No se pudo guardar {salida.name} en {carpeta}. "
+                           "Si esta abierto en Excel, cerralo y proba de nuevo.")
 
     return Resultado(
         salida=salida,
@@ -429,7 +514,7 @@ def main_cli():
         return 1
     ruta = Path(ruta)
     print(f"Leyendo {ruta.name} ...")
-    informar(generar(ruta))
+    informar(generar(leer_archivo(ruta)))
     return 0
 
 
@@ -444,6 +529,8 @@ LINEA = "#E6E6E8"
 CAMPO = "#F6F6F7"
 ACENTO = "#1F4E79"
 ACENTO_ACTIVO = "#163A56"
+PEGAR = "#E8EEF5"
+PEGAR_ACTIVO = "#D5E0EC"
 OK_COLOR = "#157A3A"
 ERROR = "#B42318"
 
@@ -472,6 +559,7 @@ class Aplicacion(tk.Tk):
         self.title(f"Estado de cuenta ISL - {EMPRESA}")
         self.configure(bg=FONDO)
         self.ruta = None
+        self.texto = None
         self.ocupado = False
         self._armar()
         self._ajustar(centrar=True)
@@ -515,9 +603,9 @@ class Aplicacion(tk.Tk):
         pasos.pack(fill="x", pady=(0, 18))
         pasos.columnconfigure(1, weight=1)
         textos = [
-            "En SAP, ejecutar la consulta EC ISL, copiar los datos y pegarlos en un Excel.",
-            "Elegir ese Excel acá abajo y generar.",
-            f"Se crea «EC ISL al {date.today():%d.%m.%Y}.xlsx» en la misma carpeta, "
+            "En SAP, ejecutar la consulta EC ISL y copiar los datos.",
+            "Tocar «Pegar desde SAP». También se puede elegir un Excel o .txt con la consulta.",
+            f"Se crea «EC ISL al {date.today():%d.%m.%Y}.xlsx» en Descargas, "
             f"con una hoja por sección y el {HOJA_RESUMEN}.",
         ]
         for i, texto in enumerate(textos):
@@ -526,22 +614,31 @@ class Aplicacion(tk.Tk):
             tk.Label(pasos, text=texto, bg=FONDO, fg=TINTA, font=(FUENTE_UI, 9), anchor="w",
                      justify="left", wraplength=ANCHO - 24).grid(row=i, column=1, sticky="w", pady=1)
 
-        self.lbl_excel = tk.Label(marco, text="Excel de la consulta", bg=FONDO, fg=SUAVE,
+        self.lbl_excel = tk.Label(marco, text="Datos de la consulta", bg=FONDO, fg=SUAVE,
                                   font=(FUENTE_UI, 9), anchor="w")
         self.lbl_excel.pack(fill="x")
 
-        self.zona_archivo = tk.Frame(marco, bg=CAMPO, highlightbackground=LINEA,
+        origen = tk.Frame(marco, bg=FONDO)
+        origen.pack(fill="x", pady=(6, 0))
+        self.boton_pegar = tk.Button(
+            origen, text="Pegar\ndesde SAP", command=self._pegar,
+            bg=PEGAR, fg=ACENTO, activebackground=PEGAR_ACTIVO, activeforeground=ACENTO_ACTIVO,
+            relief="flat", bd=0, font=(FUENTE_UI, 10), padx=16, cursor="hand2",
+        )
+        self.boton_pegar.pack(side="right", fill="y", padx=(8, 0))
+
+        self.zona_archivo = tk.Frame(origen, bg=CAMPO, highlightbackground=LINEA,
                                       highlightthickness=1, cursor="hand2")
-        self.zona_archivo.pack(fill="x", pady=(6, 0))
+        self.zona_archivo.pack(side="left", fill="both", expand=True)
         self.lbl_nombre = tk.Label(self.zona_archivo, text="Elegí un archivo",
                                     bg=CAMPO, fg=TINTA, font=(FUENTE_UI, 11),
                                     anchor="w", justify="left", padx=12, pady=8,
-                                    wraplength=ANCHO)
+                                    wraplength=ANCHO - 130)
         self.lbl_nombre.pack(fill="x")
-        self.lbl_carpeta = tk.Label(self.zona_archivo, text="Hacé clic para buscarlo  ·  .xlsx o .xls",
+        self.lbl_carpeta = tk.Label(self.zona_archivo, text="Excel o .txt  ·  Hacé clic para buscarlo",
                                      bg=CAMPO, fg=SUAVE, font=(FUENTE_UI, 9),
                                      anchor="w", justify="left", padx=12,
-                                     wraplength=ANCHO)
+                                     wraplength=ANCHO - 130)
         self.lbl_carpeta.pack(fill="x", pady=(0, 10))
         for w in (self.zona_archivo, self.lbl_nombre, self.lbl_carpeta):
             w.bind("<Button-1>", lambda e: self._elegir())
@@ -563,8 +660,26 @@ class Aplicacion(tk.Tk):
 
         self.panel = tk.Frame(marco, bg=FONDO)
 
+    def _pegar(self):
+        if self.ocupado:
+            return
+        try:
+            texto = self.clipboard_get()
+        except tk.TclError:
+            texto = ""
+        if not texto.strip():
+            self._mostrar_estado("El portapapeles está vacío. En SAP, copiá los datos de la consulta "
+                                 "y probá de nuevo.", ERROR)
+            self._ajustar()
+            return
+        self.ruta, self.texto = None, texto
+        filas = len(texto.strip().splitlines()) - 1
+        self.lbl_nombre.config(text="Datos pegados desde SAP")
+        self.lbl_carpeta.config(text=f"{filas:,} filas del portapapeles".replace(",", "."))
+        self._generar()
+
     def _poner_archivo(self, ruta):
-        self.ruta = Path(ruta)
+        self.ruta, self.texto = Path(ruta), None
         self.lbl_nombre.config(text=self.ruta.name)
         self.lbl_carpeta.config(text=str(self.ruta.parent))
         self._habilitar(True)
@@ -634,10 +749,10 @@ class Aplicacion(tk.Tk):
     def _elegir(self):
         if self.ocupado:
             return
-        inicial = str(self.ruta.parent) if self.ruta else str(Path.cwd())
+        inicial = str(self.ruta.parent) if self.ruta else str(carpeta_descargas())
         ruta = filedialog.askopenfilename(
-            title="Elegir el Excel con el resultado de la consulta EC ISL",
-            filetypes=[("Excel", "*.xlsx *.xls")],
+            title="Elegir el resultado de la consulta EC ISL",
+            filetypes=TIPOS_ARCHIVO,
             initialdir=inicial,
         )
         if ruta:
@@ -666,7 +781,7 @@ class Aplicacion(tk.Tk):
         self.estado.config(text=texto, fg=color)
 
     def _generar(self):
-        if self.ocupado or not self.ruta:
+        if self.ocupado or not (self.ruta or self.texto):
             return
         self.ocupado = True
         self._habilitar(False)
@@ -676,8 +791,13 @@ class Aplicacion(tk.Tk):
 
     def _correr(self):
         try:
-            print(f"Leyendo {self.ruta.name} ...")
-            resultado = generar(self.ruta)
+            if self.texto is not None:
+                print("Leyendo los datos pegados desde SAP ...")
+                consulta = leer_texto(self.texto, "El portapapeles")
+            else:
+                print(f"Leyendo {self.ruta.name} ...")
+                consulta = leer_archivo(self.ruta)
+            resultado = generar(consulta)
             informar(resultado)
         except ErrorUsuario as e:
             print(f"\nERROR: {e}")
@@ -704,9 +824,10 @@ class Aplicacion(tk.Tk):
         self.ocupado = False
         self._habilitar(True)
         if all(h.ok for h in res.hojas) and res.totales_ok and not res.sin_hoja:
-            self._mostrar_estado(f"Listo: {res.salida.name}", OK_COLOR)
+            self._mostrar_estado(f"Listo: {res.salida.name}\nGuardado en {res.salida.parent}", OK_COLOR)
         else:
-            self._mostrar_estado(f"Generado {res.salida.name}, pero hay controles para revisar.", ERROR)
+            self._mostrar_estado(f"Generado {res.salida.name} en {res.salida.parent}, "
+                                 "pero hay controles para revisar.", ERROR)
         self._mostrar_resultado(res)
         self._ajustar()
 
